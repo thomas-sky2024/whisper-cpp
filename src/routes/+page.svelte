@@ -34,6 +34,22 @@
   let vadDownloadError = $state<string | null>(null);
   let vadPercent = $state(0);
 
+ 
+  // ── GPU Toggle (mặc định BẬT cho mọi máy)
+  let enableGPU = $state(true);
+
+  // Load & save GPU setting
+  $effect(() => {
+    const saved = localStorage.getItem('enableGPU');
+    if (saved !== null) enableGPU = JSON.parse(saved);
+  });
+
+  $effect(() => {
+    localStorage.setItem('enableGPU', JSON.stringify(enableGPU));
+  });
+
+
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────────
   let unlistenModelProgress: (() => void) | null = null;
 
@@ -177,6 +193,7 @@
         language: $selectedLanguage,
         model: $selectedModel,
         performance_mode: $performanceMode,
+        enable_gpu: enableGPU,           // ← THÊM DÒNG NÀY
       });
       jobStore.setCompleted(result);
       $activeTab = "review";
@@ -503,7 +520,27 @@
             <option value="Balanced">Balanced (8 threads, quiet)</option>
             <option value="MaxSpeed">Max Speed (12 threads, may heat up)</option>
           </select>
+
+          <!-- GPU Toggle -->
+          <div class="gpu-toggle-container">
+            <label class="checkbox-label gpu-label">
+              <input
+                type="checkbox"
+                bind:checked={enableGPU}
+                class="gpu-checkbox"
+              />
+              <span class="gpu-text">
+                🚀 Bật GPU để tăng tốc
+                <span class="gpu-badge">Khuyến nghị</span>
+              </span>
+            </label>
+            <p class="gpu-desc">
+              Tăng tốc 2–4× trên Apple Silicon / AMD.<br>
+              <span class="gpu-warning">⚠️ Máy có thể nóng hơn bình thường</span>
+            </p>
+          </div>
         </div>
+
       </div>
 
       <!-- Right: Progress & Controls -->
@@ -1337,5 +1374,57 @@
   .audit-btn:hover {
     transform: translateY(-1px);
     box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4);
+  }
+    /* GPU Toggle Style */
+  .gpu-toggle-container {
+    margin-top: 1.25rem;
+    padding: 1rem;
+    background: #1a1b28;
+    border-radius: 10px;
+    border: 1px solid #2a2d3e;
+  }
+
+  .gpu-label {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+
+  .gpu-checkbox {
+    width: 20px;
+    height: 20px;
+    accent-color: #a78bfa;
+  }
+
+  .gpu-text {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #c4c8e2;
+  }
+
+  .gpu-badge {
+    font-size: 0.7rem;
+    background: #a78bfa;
+    color: #fff;
+    padding: 0.1rem 0.5rem;
+    border-radius: 9999px;
+    font-weight: 700;
+  }
+
+  .gpu-desc {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: #8b92b8;
+    line-height: 1.4;
+  }
+
+  .gpu-warning {
+    color: #fbbf24;
+    font-weight: 600;
   }
 </style>
