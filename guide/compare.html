@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SRT Studio - So sánh Phụ đề</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;500;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg:         #f0ece4;
+      --paper:      #faf8f4;
+      --paper2:     #f4f1eb;
+      --border:     #ddd8ce;
+      --border2:    #c8c2b6;
+      --text:       #1a1612;
+      --text-mid:   #5a5148;
+      --text-soft:  #8c8278;
+      --blue:       #1a5fa8;
+      --blue-dim:   rgba(26,95,168,0.10);
+      --green:      #1a7a4a;
+      --green-dim:  rgba(26,122,74,0.10);
+      --red:        #c0392b;
+      --gold:       #b07d1a;
+
+      --del-bg:     rgba(192,57,43,0.09);
+      --del-border: rgba(192,57,43,0.32);
+      --del-text:   #9b1c0e;
+      --ins-bg:     rgba(176,125,26,0.11);
+      --ins-border: rgba(176,125,26,0.32);
+      --ins-text:   #7a5410;
+      --ok-bg:      rgba(26,122,74,0.09);
+      --ok-border:  rgba(26,122,74,0.32);
+      --ok-text:    #115c34;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ══ STICKY TOP BAR ══ */
+    #topBar {
+      display: none;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: #1a1612;
+      padding: 10px 22px;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.22);
+    }
+    .bar-section { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .bar-divider { width: 1px; height: 22px; background: rgba(255,255,255,0.15); flex-shrink: 0; }
+    .bar-spacer  { flex: 1; min-width: 8px; }
+
+    .bar-badge { padding: 3px 11px; border-radius: 20px; font-size: 12px; font-weight: 700; }
+    .bpend { background: rgba(192,57,43,0.28); color: #ffa599; border: 1px solid rgba(192,57,43,0.45); }
+    .bok   { background: rgba(26,122,74,0.28);  color: #68e0a0; border: 1px solid rgba(26,122,74,0.45); }
+
+    .tbar-btn {
+      padding: 7px 15px; border-radius: 6px;
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+      cursor: pointer; border: none;
+      transition: opacity .15s, transform .1s;
+      white-space: nowrap; line-height: 1;
+    }
+    .tbar-btn:hover  { opacity: .82; }
+    .tbar-btn:active { transform: scale(.97); }
+    .btn-acc { background: #1a7a4a; color: #fff; }
+    .btn-rej { background: rgba(255,255,255,0.10); color: #e2ddd8; border: 1px solid rgba(255,255,255,0.18) !important; }
+    .btn-txt { background: #1a5fa8; color: #fff; }
+    .btn-srt { background: #c0392b; color: #fff; }
+
+    /* ══ WRAP ══ */
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 20px 52px; }
+
+    /* HEADER */
+    .hdr { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 26px; padding-bottom: 22px; border-bottom: 2px solid var(--border); }
+    .hdr-logo { width: 48px; height: 48px; background: var(--text); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
+    .hdr h1 { font-size: 22px; font-weight: 700; letter-spacing: -.4px; }
+    .hdr p  { font-size: 14px; color: var(--text-soft); margin-top: 4px; line-height: 1.5; }
+
+    /* LEGEND */
+    .legend {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+      margin-bottom: 22px; padding: 11px 16px;
+      background: var(--paper); border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+    }
+    .ltitle { font-weight: 700; color: var(--text-mid); font-size: 12px; text-transform: uppercase; letter-spacing: .7px; }
+    .litem  { display: flex; align-items: center; gap: 6px; color: var(--text-mid); }
+    .ldot   { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+
+    /* INPUT GRID */
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 16px; }
+    @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+
+    .col-label { display: block; font-size: 12px; font-weight: 700; color: var(--text-mid); text-transform: uppercase; letter-spacing: .7px; margin-bottom: 8px; }
+
+    .file-wrap { position: relative; margin-bottom: 8px; }
+    .file-wrap input[type="file"] { position: absolute; opacity: 0; inset: 0; cursor: pointer; width: 100%; height: 100%; }
+    .file-btn {
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      background: var(--paper); border: 1.5px dashed var(--border2); border-radius: 7px;
+      font-size: 13px; color: var(--text-soft); cursor: pointer; transition: border-color .2s, color .2s;
+    }
+    .file-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+    textarea {
+      width: 100%; height: 200px; padding: 13px 14px;
+      background: var(--paper); border: 1.5px solid var(--border); border-radius: 8px;
+      font-family: 'Noto Serif TC', serif; font-size: 15px; color: var(--text);
+      resize: vertical; outline: none; transition: border-color .2s; line-height: 1.75;
+    }
+    textarea:focus { border-color: var(--blue); background: #fff; }
+    textarea::placeholder { color: var(--text-soft); font-family: 'DM Sans', sans-serif; font-size: 13px; }
+
+    /* COMPARE BTN */
+    .cmp-btn {
+      width: 100%; padding: 15px; background: var(--text); color: #faf8f4;
+      border: none; border-radius: 9px; font-family: 'DM Sans', sans-serif;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+      transition: opacity .2s, transform .1s; margin-bottom: 22px; letter-spacing: -.2px;
+    }
+    .cmp-btn:hover   { opacity: .88; }
+    .cmp-btn:active  { transform: scale(.99); }
+    .cmp-btn:disabled { background: var(--border2); color: var(--text-soft); cursor: not-allowed; }
+
+    /* STATS */
+    .stats { display: none; padding: 14px 20px; background: var(--ok-bg); border: 1.5px solid var(--ok-border); border-radius: 8px; margin-bottom: 16px; }
+    .stats-num { font-size: 26px; font-weight: 800; color: var(--green); letter-spacing: -.5px; }
+    .stats-sub { font-size: 13px; color: var(--text-mid); margin-top: 5px; line-height: 1.6; }
+
+    /* RESULT */
+    .result-box {
+      display: none; padding: 24px 26px; background: #fff;
+      border: 1.5px solid var(--border); border-radius: 10px;
+      font-family: 'Noto Serif TC', serif; font-size: 20px; line-height: 2.6;
+      word-wrap: break-word; min-height: 120px; box-shadow: 0 2px 16px rgba(0,0,0,0.05);
+    }
+
+    /* ── CHIP: AI sai → gốc đúng ── */
+    /*
+      Hiển thị: [AI_sai_gạch_đỏ → GỐC_đúng_xanh  ✔]
+      Khi accepted: chỉ hiện GỐC_đúng_xanh
+    */
+    .correction-chip {
+      display: inline-flex; align-items: stretch;
+      border-radius: 6px; border: 1.5px solid var(--del-border); background: var(--del-bg);
+      cursor: pointer; vertical-align: middle; margin: 0 2px; overflow: hidden;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .correction-chip:hover { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-dim); }
+
+    /* chữ AI sai — gạch đỏ */
+    .chip-ai   { padding: 2px 6px; color: var(--del-text); text-decoration: line-through; font-size: .88em; }
+    .chip-arr  { padding: 2px 3px; color: var(--text-soft); font-size: 12px; display: flex; align-items: center; }
+    /* chữ gốc đúng — xanh */
+    .chip-ref  { padding: 2px 6px; color: var(--green); font-size: .88em; font-weight: 600; }
+    .chip-btn  {
+      display: flex; align-items: center; justify-content: center;
+      min-width: 26px; padding: 0 5px;
+      background: rgba(26,95,168,0.10); color: var(--blue);
+      font-size: 14px; border-left: 1px solid var(--border); transition: background .15s;
+    }
+    .chip-btn:hover { background: rgba(26,95,168,0.22); }
+
+    /* ACCEPTED: hide AI wrong, show only ref */
+    .correction-chip.accepted { border-color: var(--ok-border); background: var(--ok-bg); }
+    .correction-chip.accepted .chip-ai,
+    .correction-chip.accepted .chip-arr { display: none; }
+    .correction-chip.accepted .chip-ref { color: var(--green); }
+    .correction-chip.accepted .chip-btn { background: rgba(26,122,74,0.12); color: var(--green); border-left-color: var(--ok-border); }
+    .correction-chip.accepted .chip-btn:hover { background: rgba(26,122,74,0.25); }
+
+    /* AI thừa (xuất hiện ở AI nhưng không có trong gốc) */
+    .extra-chip {
+      display: inline-flex; align-items: stretch; border-radius: 6px;
+      border: 1.5px solid var(--ins-border); background: var(--ins-bg);
+      vertical-align: middle; margin: 0 2px; overflow: hidden;
+    }
+    .extra-chip .chip-text { padding: 2px 7px; color: var(--ins-text); font-size: .88em; }
+    .extra-chip .chip-tag  {
+      padding: 0 7px; background: rgba(176,125,26,0.18); color: var(--gold);
+      font-size: 10px; font-weight: 800; letter-spacing: .5px;
+      display: flex; align-items: center; border-left: 1px solid var(--ins-border); font-family: 'DM Sans', sans-serif;
+    }
+
+    /* gốc có nhưng AI bỏ sót hoàn toàn (pure missing) */
+    .missing-chip {
+      display: inline-flex; align-items: stretch; border-radius: 6px;
+      border: 1.5px solid rgba(192,57,43,0.32); background: rgba(192,57,43,0.07);
+      cursor: pointer; vertical-align: middle; margin: 0 2px; overflow: hidden;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .missing-chip:hover { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-dim); }
+    .missing-chip .chip-miss-label {
+      padding: 1px 6px; background: rgba(192,57,43,0.15); color: var(--red);
+      font-size: 10px; font-weight: 800; letter-spacing: .5px; font-family: 'DM Sans', sans-serif;
+      display: flex; align-items: center; border-right: 1px solid rgba(192,57,43,0.25);
+    }
+    .missing-chip .chip-ref { padding: 2px 7px; color: var(--green); font-size: .88em; font-weight: 600; }
+    .missing-chip .chip-btn {
+      display: flex; align-items: center; justify-content: center;
+      min-width: 26px; padding: 0 5px;
+      background: rgba(26,95,168,0.10); color: var(--blue);
+      font-size: 14px; border-left: 1px solid var(--border); transition: background .15s;
+    }
+    .missing-chip.accepted { border-color: var(--ok-border); background: var(--ok-bg); }
+    .missing-chip.accepted .chip-miss-label { display: none; }
+    .missing-chip.accepted .chip-btn { background: rgba(26,122,74,0.12); color: var(--green); border-left-color: var(--ok-border); }
+
+    .tip { font-size: 13px; color: var(--text-soft); text-align: center; margin-top: 14px; display: none; }
+
+    /* MODAL */
+    #dlModal { display: none; position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.42); align-items: center; justify-content: center; }
+    #dlModal.open { display: flex; }
+    .modal-box {
+      background: var(--paper); border: 1.5px solid var(--border2); border-radius: 12px;
+      padding: 28px 30px; width: 420px; max-width: 95vw; box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+    }
+    .modal-box h3 { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    .modal-box p  { font-size: 13px; color: var(--text-mid); margin-bottom: 20px; line-height: 1.65; }
+    .modal-actions { display: flex; gap: 10px; }
+    .modal-actions button { flex: 1; padding: 11px; border-radius: 7px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: opacity .15s; }
+    .modal-actions button:hover { opacity: .85; }
+    .modal-cancel  { background: var(--paper2); color: var(--text-mid); border: 1.5px solid var(--border) !important; }
+    .modal-confirm { background: var(--red); color: #fff; }
+  </style>
+</head>
+<body>
+
+<!-- ══ STICKY TOP BAR ══ -->
+<div id="topBar">
+  <div class="bar-section">
+    <span id="bPend" class="bar-badge bpend">0 lỗi chờ</span>
+    <span id="bOk"   class="bar-badge bok">0 đã sửa</span>
+  </div>
+  <div class="bar-divider"></div>
+  <div class="bar-section">
+    <button class="tbar-btn btn-acc" onclick="acceptAll()">✔ Chấp nhận tất cả</button>
+    <button class="tbar-btn btn-rej" onclick="rejectAll()">✖ Hoàn tác</button>
+  </div>
+  <div class="bar-spacer"></div>
+  <div class="bar-section">
+    <button class="tbar-btn btn-txt" onclick="downloadTxt()">⬇ Tải .TXT</button>
+    <button class="tbar-btn btn-srt" onclick="openModal()">⬇ Tải .SRT</button>
+  </div>
+</div>
+
+<!-- ══ MAIN ══ -->
+<div class="wrap">
+
+  <div class="hdr">
+    <div class="hdr-logo">🔍</div>
+    <div>
+      <h1>SRT Studio — So sánh Phụ đề</h1>
+      <p>Phát hiện lỗi AI · Chữ đỏ = AI sai · Chữ xanh = Gốc đúng · Xuất .TXT hoặc .SRT với timestamp AI</p>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="ltitle">Chú thích</span>
+    <span class="litem"><span class="ldot" style="background:var(--del-bg);border:1.5px solid var(--del-border)"></span><span style="color:var(--del-text);text-decoration:line-through;font-size:12px">AI sai</span> → <span style="color:var(--green);font-size:12px;font-weight:600">Gốc đúng</span> — click ✔ để chấp nhận</span>
+    <span class="litem"><span class="ldot" style="background:var(--ins-bg);border:1.5px solid var(--ins-border)"></span>AI nghe thừa (không có trong gốc)</span>
+    <span class="litem"><span class="ldot" style="background:rgba(192,57,43,0.07);border:1.5px solid rgba(192,57,43,0.32)"></span>Gốc có — AI bỏ sót</span>
+    <span class="litem"><span class="ldot" style="background:var(--ok-bg);border:1.5px solid var(--ok-border)"></span>Đã chấp nhận ✔</span>
+  </div>
+
+  <div class="grid">
+    <div>
+      <span class="col-label">📝 Kịch bản gốc (tham chiếu)</span>
+      <div class="file-wrap">
+        <input type="file" accept=".txt,.srt" onchange="readFile(event,'text1')">
+        <div class="file-btn">📂 Chọn file .txt / .srt</div>
+      </div>
+      <textarea id="text1" placeholder="Dán văn bản gốc hoặc chọn file…"></textarea>
+    </div>
+    <div>
+      <span class="col-label">🤖 Văn bản AI chiết xuất</span>
+      <div class="file-wrap">
+        <input type="file" accept=".txt,.srt" onchange="readFile(event,'text2')">
+        <div class="file-btn">📂 Chọn file .txt / .srt</div>
+      </div>
+      <textarea id="text2" placeholder="Dán văn bản AI hoặc chọn file…"></textarea>
+    </div>
+  </div>
+
+  <button class="cmp-btn" id="cmpBtn" onclick="compare()">🚀 Bắt đầu so sánh</button>
+
+  <div id="statsBox" class="stats"></div>
+  <div id="resultBox" class="result-box"></div>
+  <p class="tip" id="tipTxt">💡 Click vào chip lỗi để chấp nhận / hoàn tác. Văn bản final = bản gốc tham chiếu. SRT final = timestamp của AI + chữ từ bản gốc.</p>
+
+</div>
+
+<!-- ══ SRT MODAL ══ -->
+<div id="dlModal">
+  <div class="modal-box">
+    <h3>📥 Xuất file .SRT</h3>
+    <p>
+      File SRT xuất ra sẽ dùng:<br>
+      • <strong>Timestamp</strong> từ file SRT của <strong>AI chiết xuất</strong> (text2)<br>
+      • <strong>Nội dung chữ</strong> từ <strong>kịch bản gốc</strong> (text1) — khớp 100%<br><br>
+      Lưu ý: cần nhập file <strong>.srt</strong> ở ô AI chiết xuất để có timestamp.
+    </p>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal()">Huỷ</button>
+      <button class="modal-confirm" onclick="downloadSrt()">Xuất .SRT ngay</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+let corrections = []; // { id, type:'replace'|'missing', aiText, refText, accepted }
+let rawSrtAI    = ''; // raw content of text2 (AI SRT — has timestamps)
+let rawRef      = ''; // raw content of text1 (reference — clean Chinese)
+
+// ═══════════════════════════════════════════
+// FILE READ
+// ═══════════════════════════════════════════
+function readFile(e, id) {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => {
+    const content = ev.target.result;
+    document.getElementById(id).value = content;
+    if (id === 'text1') rawRef   = content;
+    if (id === 'text2') rawSrtAI = content;
+  };
+  r.readAsText(f);
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function cleanCN(s) { return (s||'').replace(/[^\u4e00-\u9fa5]/g,''); }
+
+// ═══════════════════════════════════════════
+// COMPARE
+// diff direction: ref (text1) vs AI (text2)
+// -1 = in ref but not AI  → AI bỏ sót / sai
+// +1 = in AI but not ref  → AI thừa
+// ═══════════════════════════════════════════
+function compare() {
+  const btn = document.getElementById('cmpBtn');
+  btn.disabled = true; btn.innerText = '⏳ Đang phân tích…';
+
+  const raw1 = document.getElementById('text1').value;
+  const raw2 = document.getElementById('text2').value;
+  if (!rawRef)   rawRef   = raw1;
+  if (!rawSrtAI) rawSrtAI = raw2;
+
+  setTimeout(() => {
+    // refText = gốc tham chiếu (chuẩn)
+    // aiText  = AI chiết xuất (có lỗi)
+    const refText = cleanCN(raw1);
+    const aiText  = cleanCN(raw2);
+
+    if (!refText || !aiText) {
+      alert('Vui lòng cung cấp văn bản chứa ký tự tiếng Trung hợp lệ!');
+      btn.disabled = false; btn.innerText = '🚀 Bắt đầu so sánh'; return;
+    }
+
+    const dmp = new diff_match_patch();
+    dmp.Diff_Timeout = 0;
+    // diff(ref, ai): -1 = mất khỏi ai, +1 = thêm vào ai
+    const diffs = dmp.diff_main(refText, aiText);
+    dmp.diff_cleanupSemantic(diffs);
+
+    corrections = [];
+    let cid = 0, matchCount = 0, html = [], i = 0;
+
+    while (i < diffs.length) {
+      const [op, txt] = diffs[i];
+
+      if (op === 0) {
+        // Giống nhau
+        html.push(`<span>${esc(txt)}</span>`);
+        matchCount += txt.length;
+        i++;
+
+      } else if (op === -1) {
+        // Có trong REF, không có / khác trong AI
+        const refChunk = txt;
+
+        if (i + 1 < diffs.length && diffs[i+1][0] === 1) {
+          // Tiếp theo là +1 → AI viết sai chữ này (replacement)
+          // chip: [AI_sai_đỏ → Gốc_đúng_xanh]
+          const aiChunk = diffs[i+1][1];
+          const id = cid++;
+          corrections.push({ id, type: 'replace', aiText: aiChunk, refText: refChunk, accepted: false });
+          html.push(buildReplaceChip(id, aiChunk, refChunk));
+          i += 2;
+        } else {
+          // AI bỏ sót hoàn toàn (không có chữ tương ứng)
+          const id = cid++;
+          corrections.push({ id, type: 'missing', aiText: '', refText: refChunk, accepted: false });
+          html.push(buildMissingChip(id, refChunk));
+          i++;
+        }
+
+      } else {
+        // op === +1: AI thêm chữ không có trong gốc (thừa)
+        html.push(`<span class="extra-chip"><span class="chip-text">${esc(txt)}</span><span class="chip-tag">AI THỪA</span></span>`);
+        i++;
+      }
+    }
+
+    const acc = refText.length > 0 ? (matchCount / refText.length * 100) : 0;
+
+    document.getElementById('statsBox').style.display = 'block';
+    document.getElementById('statsBox').innerHTML = `
+      <div class="stats-num">✅ ${acc.toFixed(2)}%</div>
+      <div class="stats-sub">Bản gốc: <b>${refText.length}</b> chữ &nbsp;·&nbsp; AI đúng: <b>${matchCount}</b> chữ &nbsp;·&nbsp; Lỗi phát hiện: <b>${corrections.length}</b></div>`;
+
+    document.getElementById('resultBox').style.display = 'block';
+    document.getElementById('resultBox').innerHTML = html.join('');
+    document.getElementById('topBar').style.display = 'flex';
+    document.getElementById('tipTxt').style.display = 'block';
+
+    updateBadges();
+    btn.disabled = false; btn.innerText = '🔄 So sánh lại';
+  }, 50);
+}
+
+// ── chip: AI viết sai → hiện cả 2 để user thấy ──
+// Nội dung mặc định hiển thị: cả AI sai lẫn Gốc đúng
+// Khi accepted: chỉ hiện Gốc đúng
+function buildReplaceChip(id, aiWrong, refCorrect) {
+  return `<span class="correction-chip" id="chip-${id}" onclick="toggle(${id})">
+    <span class="chip-ai">${esc(aiWrong)}</span>
+    <span class="chip-arr">→</span>
+    <span class="chip-ref">${esc(refCorrect)}</span>
+    <span class="chip-btn" title="Chấp nhận chữ gốc">✔</span>
+  </span>`;
+}
+
+// chip: AI bỏ sót — gốc có nhưng AI không có
+function buildMissingChip(id, refText) {
+  return `<span class="missing-chip" id="chip-${id}" onclick="toggle(${id})">
+    <span class="chip-miss-label">BỎ SÓT</span>
+    <span class="chip-ref">${esc(refText)}</span>
+    <span class="chip-btn" title="Chèn chữ gốc">✔</span>
+  </span>`;
+}
+
+// ═══════════════════════════════════════════
+// TOGGLE
+// ═══════════════════════════════════════════
+function toggle(id) {
+  const c = corrections.find(x => x.id === id); if (!c) return;
+  c.accepted = !c.accepted;
+  const el  = document.getElementById(`chip-${id}`);
+  const btn = el.querySelector('.chip-btn');
+  if (c.accepted) { el.classList.add('accepted'); btn.textContent = '↩'; btn.title = 'Hoàn tác'; }
+  else            { el.classList.remove('accepted'); btn.textContent = '✔'; btn.title = c.type === 'missing' ? 'Chèn chữ gốc' : 'Chấp nhận chữ gốc'; }
+  updateBadges();
+}
+function acceptAll() { corrections.forEach(c => { if (!c.accepted) toggle(c.id); }); }
+function rejectAll()  { corrections.forEach(c => { if  (c.accepted) toggle(c.id); }); }
+
+function updateBadges() {
+  const ok = corrections.filter(c => c.accepted).length;
+  const pn = corrections.length - ok;
+  document.getElementById('bPend').textContent = `${pn} lỗi chờ`;
+  document.getElementById('bOk').textContent   = `${ok} đã sửa`;
+}
+
+// ═══════════════════════════════════════════
+// BUILD FINAL TEXT
+// Logic:
+//   - span thường → giữ nguyên (chữ đúng của AI = khớp gốc)
+//   - correction-chip accepted   → lấy chip-ref (chữ gốc)
+//   - correction-chip !accepted  → lấy chip-ai  (chữ AI — giữ nguyên lỗi)
+//   - missing-chip accepted      → lấy chip-ref (chèn chữ gốc bị bỏ sót)
+//   - missing-chip !accepted     → bỏ qua (vẫn bỏ sót như AI)
+//   - extra-chip                 → bỏ qua (AI thêm thừa — không có trong gốc)
+// ═══════════════════════════════════════════
+function buildFinalText() {
+  let out = '';
+  document.getElementById('resultBox').childNodes.forEach(n => {
+    if (n.nodeType === Node.TEXT_NODE) { out += n.textContent; return; }
+    if (n.nodeType !== Node.ELEMENT_NODE) return;
+    const cls = n.className || '';
+
+    if (cls.includes('correction-chip')) {
+      if (cls.includes('accepted')) {
+        // lấy chữ gốc đúng
+        const s = n.querySelector('.chip-ref'); if (s) out += s.textContent;
+      } else {
+        // giữ chữ AI (chưa sửa)
+        const s = n.querySelector('.chip-ai'); if (s) out += s.textContent;
+      }
+    } else if (cls.includes('missing-chip')) {
+      if (cls.includes('accepted')) {
+        // chèn chữ bị bỏ sót từ gốc
+        const s = n.querySelector('.chip-ref'); if (s) out += s.textContent;
+      }
+      // else: vẫn bỏ qua như AI đã bỏ sót
+    } else if (cls.includes('extra-chip')) {
+      // AI thêm thừa — bỏ
+    } else {
+      out += n.textContent;
+    }
+  });
+  return out;
+}
+
+// ═══════════════════════════════════════════
+// DOWNLOAD TXT — nội dung = bản gốc tham chiếu
+// (tức là acceptAll rồi lấy, hoặc dùng rawRef trực tiếp)
+// ═══════════════════════════════════════════
+function downloadTxt() {
+  // Văn bản final = chỉ chữ Hán từ kịch bản gốc (đã clean)
+  const refRaw = document.getElementById('text1').value || rawRef;
+  const finalTxt = cleanCN(refRaw);
+  if (!finalTxt) { alert('Chưa có kết quả để tải!'); return; }
+  dl(finalTxt, 'phu_de_da_sua.txt');
+}
+
+// ═══════════════════════════════════════════
+// DOWNLOAD SRT
+// Timestamp từ AI (text2/rawSrtAI), chữ từ gốc (text1/rawRef)
+// ═══════════════════════════════════════════
+function openModal()  { document.getElementById('dlModal').classList.add('open'); }
+function closeModal() { document.getElementById('dlModal').classList.remove('open'); }
+
+function downloadSrt() {
+  closeModal();
+
+  // Nguồn timestamp: file SRT của AI (text2)
+  const srtSrc = rawSrtAI || document.getElementById('text2').value;
+  if (!srtSrc || !srtSrc.includes('-->')) {
+    alert('Không tìm thấy timestamp SRT. Hãy nhập file .srt ở ô AI chiết xuất (có dấu --> ).');
+    return;
+  }
+
+  // Nguồn chữ: kịch bản gốc (text1) — toàn bộ chữ Hán
+  const refRaw   = document.getElementById('text1').value || rawRef;
+  const refChars = Array.from(cleanCN(refRaw)); // stream chữ Hán từ gốc
+  let ci = 0;
+
+  // Parse SRT blocks từ AI
+  const blocks = srtSrc.trim().split(/\n\s*\n/);
+
+  const outBlocks = blocks.map(block => {
+    const lines = block.split('\n');
+    const tsIdx = lines.findIndex(l => l.includes('-->'));
+    if (tsIdx === -1) return block; // không phải block subtitle — giữ nguyên
+
+    const subLines = lines.slice(tsIdx + 1);
+    // Đếm bao nhiêu chữ Hán trong block AI này
+    const aiSubText = subLines.join('');
+    const aiCNCount = (aiSubText.match(/[\u4e00-\u9fa5]/g) || []).length;
+
+    // Lấy đúng số chữ đó từ stream gốc
+    let newChars = '';
+    for (let k = 0; k < aiCNCount && ci < refChars.length; k++, ci++) {
+      newChars += refChars[ci];
+    }
+
+    // Điền chữ gốc vào, giữ nguyên ký tự không phải Hán (dấu câu, khoảng trắng, v.v.)
+    let nci = 0;
+    const newSubLines = subLines.map(line => {
+      let nl = '';
+      for (const ch of line) {
+        if (/[\u4e00-\u9fa5]/.test(ch)) {
+          nl += nci < newChars.length ? newChars[nci++] : ch;
+        } else {
+          nl += ch;
+        }
+      }
+      return nl;
+    });
+
+    return [lines[0], lines[tsIdx], ...newSubLines].join('\n');
+  });
+
+  dl(outBlocks.join('\n\n') + '\n', 'phu_de_da_sua.srt');
+}
+
+function dl(content, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
+  a.download = filename; a.click();
+}
+
+document.getElementById('dlModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the AutoSub main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    {
+      "identifier": "fs:allow-read",
+      "scope": [
+        "**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-write",
+      "scope": [
+        "**"
+      ]
+    },
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "fs:allow-exists",
+    "shell:default",
+    "shell:allow-open",
+    {
+      "identifier": "shell:allow-execute",
+      "args": true,
+      "name": "binaries/ffmpeg"
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "args": true,
+      "name": "binaries/ffprobe"
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "args": true,
+      "name": "binaries/yt-dlp"
+    }
+  ]
+}
