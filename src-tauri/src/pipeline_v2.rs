@@ -8,19 +8,22 @@
 use crate::{
     cache, demucs,
     error::{AutoSubError, Result},
-    ffmpeg, job_manager::JobManager, model_manager::ModelManager,
-    post_process, subtitle, validator,
+    ffmpeg,
+    job_manager::JobManager,
+    model_manager::ModelManager,
+    post_process, subtitle,
     vad::{self, VadConfig},
+    validator,
     whisper_native::{WhisperEngine, WhisperNativeProgress},
 };
 use hound; // BẮT BUỘC: dùng trong read_wav_f32()
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{mpsc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -36,15 +39,21 @@ pub struct PipelineOptions {
     pub video_path: String,
     pub language: String,
     pub model: String,
-    // performance_mode removed — thread count handled by ModelVariant::recommended_threads()
-    // Frontend có thể vẫn gửi field này, serde sẽ ignore vì không có trong struct
     #[serde(default)]
     pub isolate_vocals: bool,
     #[serde(default = "default_vad_threshold")]
     pub vad_threshold: f32,
+    // ── MỚI: GPU toggle từ UI ──
+    #[serde(default = "default_enable_gpu")]
+    pub enable_gpu: bool,
 }
 
-fn default_vad_threshold() -> f32 { 0.5 }
+fn default_vad_threshold() -> f32 {
+    0.5
+}
+fn default_enable_gpu() -> bool {
+    true // Mặc định TẮT GPU để an toàn
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineResult {
@@ -59,6 +68,7 @@ pub struct AppStateV2 {
     pub job_manager: Arc<JobManager>,
     pub whisper_engine: Arc<Mutex<Option<WhisperEngine>>>,
     pub loaded_model: Arc<Mutex<String>>,
+    pub loaded_gpu: Arc<Mutex<bool>>, // ← THÊM DÒNG NÀY
     pub exit_flag: Arc<AtomicBool>,
 }
 
@@ -68,19 +78,32 @@ impl AppStateV2 {
             job_manager: Arc::new(JobManager::new()),
             whisper_engine: Arc::new(Mutex::new(None)),
             loaded_model: Arc::new(Mutex::new(String::new())),
+            loaded_gpu: Arc::new(Mutex::new(false)), // ← THÊM
             exit_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Load model vào RAM nếu chưa load hoặc đổi model.
     /// Singleton — tránh load 3GB I/O mỗi job.
-    pub async fn get_or_load_engine(&self, model_path: &str) -> Result<()> {
+    /// Load model (hoặc reload nếu thay đổi GPU setting)
+    pub async fn get_or_load_engine(&self, model_path: &str, enable_gpu: bool) -> Result<()> {
         let mut engine = self.whisper_engine.lock().await;
-        let mut loaded = self.loaded_model.lock().await;
-        if engine.is_none() || *loaded != model_path {
-            info!("pipeline_v2: loading model {}", model_path);
-            *engine = Some(WhisperEngine::load(model_path)?);
-            *loaded = model_path.to_string();
+        let mut loaded_model = self.loaded_model.lock().await;
+        let mut loaded_gpu = self.loaded_gpu.lock().await;
+
+        let should_reload =
+            engine.is_none() || *loaded_model != model_path || *loaded_gpu != enable_gpu;
+
+        if should_reload {
+            info!(
+                "pipeline_v2: loading model {} (GPU: {})",
+                model_path, enable_gpu
+            );
+            *engine = Some(WhisperEngine::load(model_path, enable_gpu)?);
+            *loaded_model = model_path.to_string();
+            *loaded_gpu = enable_gpu;
+        } else {
+            info!("pipeline_v2: reusing loaded engine (GPU: {})", *loaded_gpu);
         }
         Ok(())
     }
@@ -108,7 +131,9 @@ fn group_into_batches(
     let max_silence_in_batch = 2.0f32;
     let mut batches = Vec::new();
 
-    let regions: Vec<(f32, f32)> = vad_output.segments.iter()
+    let regions: Vec<(f32, f32)> = vad_output
+        .segments
+        .iter()
         .map(|seg| (seg.start_ms as f32 / 1000.0, seg.end_ms as f32 / 1000.0))
         .collect();
 
@@ -155,7 +180,11 @@ fn group_into_batches(
         }
     }
 
-    info!("group_into_batches: {} regions → {} batches", regions.len(), batches.len());
+    info!(
+        "group_into_batches: {} regions → {} batches",
+        regions.len(),
+        batches.len()
+    );
     batches
 }
 
@@ -173,7 +202,9 @@ fn push_batch(pcm: &[f32], start_secs: f32, end_secs: f32, sr: f32, out: &mut Ve
 // ── Smart Demucs (RMS detection) ─────────────────────────────────────────────
 
 fn rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() { return 0.0; }
+    if samples.is_empty() {
+        return 0.0;
+    }
     let sq: f32 = samples.iter().map(|&s| s * s).sum();
     (sq / samples.len() as f32).sqrt()
 }
@@ -205,11 +236,18 @@ fn should_run_demucs(pcm: &[f32], vad_output: &vad::VadOutput, sample_rate: u32)
 
     let speech_rms = rms(&speech_buf);
     let noise_rms = rms(&noise_buf);
-    let ratio = if speech_rms > 0.001 { noise_rms / speech_rms } else { 0.0 };
+    let ratio = if speech_rms > 0.001 {
+        noise_rms / speech_rms
+    } else {
+        0.0
+    };
 
     info!(
         "RMS: speech={:.4} noise={:.4} ratio={:.2} → Demucs={}",
-        speech_rms, noise_rms, ratio, ratio > 0.4
+        speech_rms,
+        noise_rms,
+        ratio,
+        ratio > 0.4
     );
     ratio > 0.4
 }
@@ -217,11 +255,14 @@ fn should_run_demucs(pcm: &[f32], vad_output: &vad::VadOutput, sample_rate: u32)
 // ── Emit helper ───────────────────────────────────────────────────────────────
 
 fn emit(app: &AppHandle, stage: &str, pct: f32, segs: usize) {
-    let _ = app.emit("pipeline-progress", ProgressPayload {
-        stage: stage.to_string(),
-        percent: pct,
-        segment_count: segs,
-    });
+    let _ = app.emit(
+        "pipeline-progress",
+        ProgressPayload {
+            stage: stage.to_string(),
+            percent: pct,
+            segment_count: segs,
+        },
+    );
 }
 
 // ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -239,78 +280,128 @@ pub async fn run(
     // Stage 0: Cache check
     emit(&app, "Checking cache", 2.0, 0);
     if let Ok(Some(cached)) = cache::check_cache(video_path, model_name, lang) {
-        let srt = tokio::fs::read_to_string(&cached).await
+        let srt = tokio::fs::read_to_string(&cached)
+            .await
             .map_err(|e| AutoSubError::Cache(format!("Read cache: {}", e)))?;
         let segs = parse_srt(&srt);
         let txt = subtitle::to_txt(&segs);
         emit(&app, "Done (from cache)", 100.0, segs.len());
         return Ok(PipelineResult {
-            segments: segs, srt_content: srt, txt_content: txt,
-            duration_secs: 0.0, from_cache: true,
+            segments: segs,
+            srt_content: srt,
+            txt_content: txt,
+            duration_secs: 0.0,
+            from_cache: true,
         });
     }
 
     if !ModelManager::verify_model(model_name) {
-        return Err(AutoSubError::WhisperDecode(format!("Model '{}' không tìm thấy.", model_name)));
+        return Err(AutoSubError::WhisperDecode(format!(
+            "Model '{}' không tìm thấy.",
+            model_name
+        )));
     }
-    let model_path = ModelManager::get_model_path(model_name).to_string_lossy().to_string();
+    let model_path = ModelManager::get_model_path(model_name)
+        .to_string_lossy()
+        .to_string();
 
     let dur = {
-        let ffp = app.shell().sidecar("ffprobe").ok()
+        let ffp = app
+            .shell()
+            .sidecar("ffprobe")
+            .ok()
             .or_else(|| app.shell().sidecar("ffmpeg").ok());
-        if let Some(s) = ffp { ffmpeg::get_video_duration(s, video_path).await.unwrap_or(0.0) }
-        else { 0.0 }
+        if let Some(s) = ffp {
+            ffmpeg::get_video_duration(s, video_path)
+                .await
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
     };
 
     // Stage 1: FFmpeg → audio.wav (16kHz mono PCM)
     emit(&app, "Extracting audio", 5.0, 0);
     job_mgr.update_progress("Extracting audio", 5.0);
-    cache::update_state(video_path, model_name, lang, dur, cache::PipelineState::Extracting)?;
+    cache::update_state(
+        video_path,
+        model_name,
+        lang,
+        dur,
+        cache::PipelineState::Extracting,
+    )?;
 
     let cache_dir = cache::cache_dir(video_path)?;
-    tokio::fs::create_dir_all(&cache_dir).await
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
         .map_err(|e| AutoSubError::Cache(format!("mkdir: {}", e)))?;
     let audio_path = cache_dir.join("audio.wav").to_string_lossy().to_string();
 
-    crate::utils::retry(|| async {
-        let (tx, mut rx) = mpsc::channel::<ffmpeg::FfmpegProgress>(32);
-        let a2 = app.clone(); let j2 = job_mgr.clone();
-        tokio::spawn(async move {
-            let mut last_emit = std::time::Instant::now();
-            let mut last_s = -1.0;
-            while let Some(p) = rx.recv().await {
-                let s = 5.0 + p.percent * 0.15; // 5% → 20%
-                if s - last_s >= 1.0 || last_emit.elapsed().as_millis() > 300 {
-                    emit(&a2, "Extracting audio", s, 0);
-                    j2.update_progress("Extracting audio", s);
-                    last_s = s;
-                    last_emit = std::time::Instant::now();
+    crate::utils::retry(
+        || async {
+            let (tx, mut rx) = mpsc::channel::<ffmpeg::FfmpegProgress>(32);
+            let a2 = app.clone();
+            let j2 = job_mgr.clone();
+            tokio::spawn(async move {
+                let mut last_emit = std::time::Instant::now();
+                let mut last_s = -1.0;
+                while let Some(p) = rx.recv().await {
+                    let s = 5.0 + p.percent * 0.15; // 5% → 20%
+                    if s - last_s >= 1.0 || last_emit.elapsed().as_millis() > 300 {
+                        emit(&a2, "Extracting audio", s, 0);
+                        j2.update_progress("Extracting audio", s);
+                        last_s = s;
+                        last_emit = std::time::Instant::now();
+                    }
                 }
-            }
-        });
-        let sc = app.shell().sidecar("ffmpeg")
-            .map_err(|e| AutoSubError::SidecarNotFound(e.to_string()))?;
-        ffmpeg::extract_audio(sc, video_path, &audio_path, dur, Some(tx)).await
-    }, 2).await?;
+            });
+            let sc = app
+                .shell()
+                .sidecar("ffmpeg")
+                .map_err(|e| AutoSubError::SidecarNotFound(e.to_string()))?;
+            ffmpeg::extract_audio(sc, video_path, &audio_path, dur, Some(tx)).await
+        },
+        2,
+    )
+    .await?;
 
     // Stage 2: Đọc WAV vào RAM
     emit(&app, "Analyzing audio", 22.0, 0);
     let pcm = read_wav_f32(&audio_path).await?;
-    info!("pipeline_v2: {:.1}s audio ({} samples)", pcm.len() as f32 / 16000.0, pcm.len());
+    info!(
+        "pipeline_v2: {:.1}s audio ({} samples)",
+        pcm.len() as f32 / 16000.0,
+        pcm.len()
+    );
 
     // Stage 3: VAD — detect speech segments
     emit(&app, "Voice detection", 25.0, 0);
     let vad_out = if ModelManager::vad_model_ready() {
-        let vm = ModelManager::get_vad_model_path().to_string_lossy().to_string();
+        let vm = ModelManager::get_vad_model_path()
+            .to_string_lossy()
+            .to_string();
         let pcm2 = pcm.clone();
-        let cfg = VadConfig { model_path: vm, threshold: opts.vad_threshold, min_silence_ms: 300 };
+        let cfg = VadConfig {
+            model_path: vm,
+            threshold: opts.vad_threshold,
+            min_silence_ms: 300,
+        };
         match tokio::task::spawn_blocking(move || vad::process(&pcm2, &cfg, 16000)).await {
             Ok(Ok(v)) => {
-                info!("pipeline_v2: VAD found {} speech segments", v.segments.len());
+                info!(
+                    "pipeline_v2: VAD found {} speech segments",
+                    v.segments.len()
+                );
                 Some(v)
             }
-            Ok(Err(e)) => { warn!("pipeline_v2: VAD error: {}", e); None }
-            Err(e)     => { warn!("pipeline_v2: VAD panic: {}", e); None }
+            Ok(Err(e)) => {
+                warn!("pipeline_v2: VAD error: {}", e);
+                None
+            }
+            Err(e) => {
+                warn!("pipeline_v2: VAD panic: {}", e);
+                None
+            }
         }
     } else {
         warn!("pipeline_v2: VAD model không có — batch chia đều 25s (kém hiệu quả)");
@@ -320,16 +411,26 @@ pub async fn run(
     // Stage 3.5: Smart Demucs — chỉ khi phát hiện nhạc nền nặng hoặc user bật
     let mut final_audio = audio_path.clone();
     let need_demucs = opts.isolate_vocals
-        || vad_out.as_ref().map_or(false, |v| should_run_demucs(&pcm, v, 16000));
+        || vad_out
+            .as_ref()
+            .map_or(false, |v| should_run_demucs(&pcm, v, 16000));
 
     if need_demucs {
         emit(&app, "Separating vocals", 28.0, 0);
-        info!("pipeline_v2: Demucs activated (manual={}, RMS-based={})",
-            opts.isolate_vocals, !opts.isolate_vocals);
+        info!(
+            "pipeline_v2: Demucs activated (manual={}, RMS-based={})",
+            opts.isolate_vocals, !opts.isolate_vocals
+        );
         if let Ok(sc) = app.shell().sidecar("demucs-main") {
-            let dm = ModelManager::get_demucs_model_path().to_string_lossy().to_string();
-            match demucs::separate_vocals(sc, &audio_path, &cache_dir.to_string_lossy(), &dm).await {
-                Ok(p)  => { info!("pipeline_v2: vocals → {}", p); final_audio = p; }
+            let dm = ModelManager::get_demucs_model_path()
+                .to_string_lossy()
+                .to_string();
+            match demucs::separate_vocals(sc, &audio_path, &cache_dir.to_string_lossy(), &dm).await
+            {
+                Ok(p) => {
+                    info!("pipeline_v2: vocals → {}", p);
+                    final_audio = p;
+                }
                 Err(e) => warn!("pipeline_v2: Demucs failed ({}), dùng audio gốc", e),
             }
         } else {
@@ -347,16 +448,25 @@ pub async fn run(
     // Stage 4: Whisper với batch grouping
     emit(&app, "Transcribing", 35.0, 0);
     job_mgr.update_progress("Transcribing", 35.0);
-    cache::update_state(video_path, model_name, lang, dur, cache::PipelineState::Transcribing)?;
+    cache::update_state(
+        video_path,
+        model_name,
+        lang,
+        dur,
+        cache::PipelineState::Transcribing,
+    )?;
 
-    state.get_or_load_engine(&model_path).await?;
+    state
+        .get_or_load_engine(&model_path, opts.enable_gpu)
+        .await?;
     let engine_guard = state.whisper_engine.lock().await;
     let engine = engine_guard.as_ref().unwrap(); // safe: vừa load ở trên
 
     let batches = if let Some(ref v) = vad_out {
         group_into_batches(&pcm_final, v, 16000, 25.0)
     } else {
-        pcm_final.chunks(25 * 16000)
+        pcm_final
+            .chunks(25 * 16000)
             .enumerate()
             .map(|(i, c)| AudioBatch {
                 samples: c.to_vec(),
@@ -371,16 +481,19 @@ pub async fn run(
 
     for (idx, batch) in batches.into_iter().enumerate() {
         // Kiểm tra dừng hoặc thoát app
-        if state.exit_flag.load(Ordering::SeqCst) || job_mgr.state() == crate::job_manager::JobState::Cancelled {
+        if state.exit_flag.load(Ordering::SeqCst)
+            || job_mgr.state() == crate::job_manager::JobState::Cancelled
+        {
             info!("pipeline_v2: cancellation or exit detected, stopping batch loop");
             break;
         }
 
         let pstart = 35.0 + (idx as f32 / total as f32) * 45.0;
-        let pend   = 35.0 + ((idx + 1) as f32 / total as f32) * 45.0;
+        let pend = 35.0 + ((idx + 1) as f32 / total as f32) * 45.0;
 
         let (tx, mut rx) = mpsc::channel::<WhisperNativeProgress>(32);
-        let a2 = app.clone(); let j2 = job_mgr.clone();
+        let a2 = app.clone();
+        let j2 = job_mgr.clone();
         tokio::spawn(async move {
             let mut last_emit = std::time::Instant::now();
             let mut last_s = -1.0;
@@ -396,26 +509,47 @@ pub async fn run(
         });
 
         // language=None mỗi batch → auto-detect → fix multilingual drift
-        let batch_lang = if lang == "auto" || lang.is_empty() { "auto" } else { lang.as_str() };
+        let batch_lang = if lang == "auto" || lang.is_empty() {
+            "auto"
+        } else {
+            lang.as_str()
+        };
 
-        let mut segs = engine.transcribe(batch.samples, batch_lang, None, Some(tx), Some(state.exit_flag.clone())).await?;
+        let mut segs = engine
+            .transcribe(
+                batch.samples,
+                batch_lang,
+                None,
+                Some(tx),
+                Some(state.exit_flag.clone()),
+            )
+            .await?;
 
         // Cộng offset batch về timeline gốc video
         // Đây là bước quan trọng nhất để kết quả các batch khớp timeline
         for seg in &mut segs {
             seg.start += batch.original_start_secs;
-            seg.end   += batch.original_start_secs;
+            seg.end += batch.original_start_secs;
         }
 
         info!(
             "pipeline_v2: batch {}/{}: {} segs, offset={:.1}s",
-            idx + 1, total, segs.len(), batch.original_start_secs
+            idx + 1,
+            total,
+            segs.len(),
+            batch.original_start_secs
         );
         all_segs.extend(segs);
     }
 
     drop(engine_guard);
-    cache::update_state(video_path, model_name, lang, dur, cache::PipelineState::Transcribed)?;
+    cache::update_state(
+        video_path,
+        model_name,
+        lang,
+        dur,
+        cache::PipelineState::Transcribed,
+    )?;
 
     // Stage 5: Validate
     emit(&app, "Validating", 80.0, all_segs.len());
@@ -424,7 +558,13 @@ pub async fn run(
 
     // Stage 6: Post-process
     emit(&app, "Post-processing", 85.0, validated.len());
-    cache::update_state(video_path, model_name, lang, dur, cache::PipelineState::Processing)?;
+    cache::update_state(
+        video_path,
+        model_name,
+        lang,
+        dur,
+        cache::PipelineState::Processing,
+    )?;
     let processed = post_process::process(validated);
 
     // Stage 7: Export
@@ -471,14 +611,19 @@ async fn read_wav_f32(path: &str) -> Result<Vec<f32>> {
         let samples: Vec<f32> = match spec.sample_format {
             hound::SampleFormat::Int => {
                 let max = (1i64 << (spec.bits_per_sample - 1)) as f32;
-                r.samples::<i32>().filter_map(|s| s.ok()).map(|s| s as f32 / max).collect()
+                r.samples::<i32>()
+                    .filter_map(|s| s.ok())
+                    .map(|s| s as f32 / max)
+                    .collect()
             }
-            hound::SampleFormat::Float => {
-                r.samples::<f32>().filter_map(|s| s.ok()).collect()
-            }
+            hound::SampleFormat::Float => r.samples::<f32>().filter_map(|s| s.ok()).collect(),
         };
 
-        info!("read_wav: {} samples ({:.1}s)", samples.len(), samples.len() as f32 / 16000.0);
+        info!(
+            "read_wav: {} samples ({:.1}s)",
+            samples.len(),
+            samples.len() as f32 / 16000.0
+        );
         Ok(samples)
     })
     .await
@@ -491,13 +636,17 @@ fn parse_srt(srt: &str) -> Vec<subtitle::Segment> {
     let mut out = Vec::new();
     for block in srt.trim().split("\n\n") {
         let lines: Vec<&str> = block.lines().collect();
-        if lines.len() < 3 { continue; }
+        if lines.len() < 3 {
+            continue;
+        }
         let parts: Vec<&str> = lines[1].split(" --> ").collect();
-        if parts.len() != 2 { continue; }
+        if parts.len() != 2 {
+            continue;
+        }
         out.push(subtitle::Segment {
             start: parse_ts(parts[0].trim()),
-            end:   parse_ts(parts[1].trim()),
-            text:  lines[2..].join("\n"),
+            end: parse_ts(parts[1].trim()),
+            text: lines[2..].join("\n"),
         });
     }
     out
@@ -507,5 +656,9 @@ fn parse_ts(ts: &str) -> f32 {
     let (hms, ms) = ts.split_once(',').unwrap_or((ts, "0"));
     let p: Vec<f32> = hms.split(':').filter_map(|x| x.parse().ok()).collect();
     let ms: f32 = ms.parse().unwrap_or(0.0) / 1000.0;
-    if p.len() == 3 { p[0] * 3600.0 + p[1] * 60.0 + p[2] + ms } else { 0.0 }
+    if p.len() == 3 {
+        p[0] * 3600.0 + p[1] * 60.0 + p[2] + ms
+    } else {
+        0.0
+    }
 }

@@ -13,15 +13,15 @@ mod error;
 mod ffmpeg;
 mod job_manager;
 mod model_manager;
-mod pipeline_v2;      // THAY pipeline → pipeline_v2
+mod pipeline_v2; // THAY pipeline → pipeline_v2
 mod post_process;
 mod subtitle;
 mod subtitle_sync;
 mod thermal;
 mod utils;
+mod vad; // MỚI: native VAD module
 mod validator;
-mod vad;              // MỚI: native VAD module
-mod whisper_native;   // MỚI: native Whisper module
+mod whisper_native; // MỚI: native Whisper module
 
 // Unused JobManager import removed
 use pipeline_v2::{AppStateV2, PipelineOptions, PipelineResult};
@@ -44,32 +44,34 @@ async fn start_pipeline(
 ) -> Result<PipelineResult, error::AutoSubError> {
     let jm = state.inner.job_manager.clone();
     jm.reset();
-    
+
     let app_handle = app.clone();
     let state_inner = state.inner.clone();
     let jm_task = jm.clone();
-    
-    let task = tokio::spawn(async move {
-        pipeline_v2::run(app_handle, opts, jm_task, state_inner).await
-    });
-    
+
+    let task =
+        tokio::spawn(async move { pipeline_v2::run(app_handle, opts, jm_task, state_inner).await });
+
     {
         let mut active = jm.active_task.lock().unwrap();
         *active = Some(task.abort_handle());
     }
-    
+
     let result = task.await;
-    
+
     // Clear the task handle
     {
         let mut active = jm.active_task.lock().unwrap();
         *active = None;
     }
-    
+
     match result {
         Ok(res) => res,
         Err(e) if e.is_cancelled() => Err(error::AutoSubError::Cancelled),
-        Err(e) => Err(error::AutoSubError::WhisperDecode(format!("Task error: {}", e))),
+        Err(e) => Err(error::AutoSubError::WhisperDecode(format!(
+            "Task error: {}",
+            e
+        ))),
     }
 }
 
@@ -99,7 +101,7 @@ async fn list_models() -> Result<Vec<String>, error::AutoSubError> {
 #[derive(serde::Serialize)]
 pub struct EnvironmentAudit {
     pub ffmpeg: bool,
-    pub whisper: bool,   // true nếu whisper-rs model loaded, hoặc sidecar exists
+    pub whisper: bool, // true nếu whisper-rs model loaded, hoặc sidecar exists
     pub ytdlp: bool,
     pub models_dir: String,
     pub vad_ready: bool, // MỚI: trạng thái VAD model
@@ -131,8 +133,14 @@ async fn audit_environment(
 async fn unload_model(state: State<'_, AppState>) -> Result<(), error::AutoSubError> {
     let mut engine = state.inner.whisper_engine.lock().await;
     *engine = None;
-    let mut loaded = state.inner.loaded_model.lock().await;
-    loaded.clear();
+
+    let mut loaded_model = state.inner.loaded_model.lock().await;
+    loaded_model.clear();
+
+    // ── MỚI: clear GPU flag ──
+    let mut loaded_gpu = state.inner.loaded_gpu.lock().await;
+    *loaded_gpu = false;
+
     log::info!("lib: whisper model unloaded from RAM");
     Ok(())
 }
@@ -150,9 +158,9 @@ async fn apply_subtitle_sync(
 
 #[tauri::command]
 async fn export_file(path: String, content: String) -> Result<(), error::AutoSubError> {
-    tokio::fs::write(&path, content).await.map_err(|e| {
-        error::AutoSubError::Export(format!("Failed to write file: {}", e))
-    })
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|e| error::AutoSubError::Export(format!("Failed to write file: {}", e)))
 }
 
 #[tauri::command]
@@ -200,9 +208,12 @@ pub fn run() {
         tauri::RunEvent::ExitRequested { .. } => {
             log::info!("lib: ExitRequested, performing final cleanup");
             let state = app_handle.state::<AppState>();
-            
+
             // 1. Tín hiệu dừng cho engine và pipeline
-            state.inner.exit_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            state
+                .inner
+                .exit_flag
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             state.inner.job_manager.cancel();
 
             // 2. Giải phóng Whisper Engine (Metal resources)
@@ -213,8 +224,12 @@ pub fn run() {
                 *engine = None;
             }
             {
-                let mut loaded = state.inner.loaded_model.blocking_lock();
-                loaded.clear();
+                let mut loaded_model = state.inner.loaded_model.blocking_lock();
+                loaded_model.clear();
+            }
+            {
+                let mut loaded_gpu = state.inner.loaded_gpu.blocking_lock();
+                *loaded_gpu = false;
             }
 
             // 3. Đợi một chút để spawn_blocking threads kịp thoát và drop Arc clones

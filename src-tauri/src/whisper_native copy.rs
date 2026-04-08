@@ -29,8 +29,7 @@ pub struct WhisperEngine {
 }
 
 impl WhisperEngine {
-    // ✅ ĐÃ THÊM enable_gpu: bool theo yêu cầu UI
-    pub fn load(model_path: &str, enable_gpu: bool) -> Result<Self> {
+    pub fn load(model_path: &str) -> Result<Self> {
         let hardware = if is_apple_silicon() {
             "Apple Silicon"
         } else if is_intel_mac_amd() {
@@ -43,34 +42,29 @@ impl WhisperEngine {
 
         let mut ctx_params = WhisperContextParameters::default();
 
-        // Gán trực tiếp theo lựa chọn người dùng từ UI
-        ctx_params.use_gpu = enable_gpu;
-
         if is_intel_mac_amd() {
-            if enable_gpu {
-                // Intel + AMD GPU mode
-                std::env::set_var("GGML_METAL_N_CB", "2");
-                std::env::set_var("GGML_METAL_MAX_BUFFER_SIZE", "2147483648");
-                std::env::set_var("GGML_METAL_MPS", "0");
-                info!("⚠️ Intel + AMD mode → BẬT GPU (Theo yêu cầu từ người dùng)");
-            } else {
-                info!("🛡️ Intel + AMD mode → TẮT GPU (Chạy thuần CPU, mát máy, an toàn)");
-            }
+            // Bật GPU + Flash Attention (thử tốc độ cao hơn)
+            ctx_params.use_gpu = true;
+            ctx_params.flash_attn = true;
+
+            std::env::set_var("GGML_METAL_N_CB", "2");
+            std::env::set_var("GGML_METAL_MAX_BUFFER_SIZE", "2147483648");
+            std::env::set_var("GGML_METAL_MPS", "0");
+
+            info!("🚀 Intel + AMD mode → use_gpu = true + flash_attn = true");
         } else if is_apple_silicon() {
-            if enable_gpu {
-                ctx_params.flash_attn = true;
-                std::env::set_var("GGML_METAL_N_CB", "4");
-                std::env::set_var("GGML_METAL_MAX_BUFFER_SIZE", "32212254720");
-                info!("🚀 Apple Silicon → BẬT Full GPU + Flash Attention");
-            } else {
-                info!("🍏 Apple Silicon → TẮT GPU (Chạy thuần CPU)");
-            }
+            ctx_params.use_gpu = true;
+            ctx_params.flash_attn = true;
+
+            std::env::set_var("GGML_METAL_N_CB", "4");
+            std::env::set_var("GGML_METAL_MAX_BUFFER_SIZE", "32212254720");
+            info!("🚀 Apple Silicon → use_gpu = true + flash_attn = true (Full GPU)");
         }
 
         let ctx = WhisperContext::new_with_params(model_path, ctx_params)
             .map_err(|e| AutoSubError::WhisperDecode(format!("Load model failed: {}", e)))?;
 
-        info!("✅ Model loaded successfully (GPU Enabled: {})", enable_gpu);
+        info!("✅ Model loaded successfully on Metal");
         Ok(Self { ctx: Arc::new(ctx) })
     }
 
@@ -88,11 +82,17 @@ impl WhisperEngine {
         } else {
             language.to_string()
         };
+
         let n_threads = threads.unwrap_or_else(|| {
             if is_apple_silicon() {
                 num_cpus::get_physical().max(1)
             } else {
-                4
+                let cores = num_cpus::get_physical();
+                if cores > 4 {
+                    cores - 2
+                } else {
+                    cores
+                }
             }
         });
 
@@ -108,12 +108,9 @@ impl WhisperEngine {
             }
 
             params.set_n_threads(n_threads as i32);
-
-            // ================== CẤU HÌNH TỐI ƯU CHUNG CHO TẤT CẢ NGÔN NGỮ ==================
-            params.set_token_timestamps(false); // Không cần word-level timestamp
-            params.set_split_on_word(false); // Không tách theo từ
-            params.set_max_len(0); // Để Whisper tự ngắt câu theo ngữ điệu và dấu câu
-
+            params.set_token_timestamps(true);
+            params.set_split_on_word(true);
+            params.set_max_len(42);
             params.set_no_speech_thold(0.6);
             params.set_logprob_thold(-1.0);
             params.set_print_special(false);

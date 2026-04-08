@@ -35,12 +35,14 @@ sysinfo = "0.30"
 log = "0.4"
 env_logger = "0.11"
 
+# Whisper (dùng lại phiên bản cũ ổn định)
+whisper-rs = { version = "0.16", features = ["metal"] }
+# Xóa hoặc comment dòng whisper-cpp-plus nếu có
+# whisper-cpp-plus = { version = "0.1", features = ["metal"] }
+
 # Native VAD
 sherpa-onnx = "1.12.34"
-
-# Native Whisper 
-whisper-rs = { version = "0.16", features = ["metal"] }
-
+ 
 # Audio decoding in-process
 hound = "3.5"
 
